@@ -1,0 +1,174 @@
+{
+    "name": "pl_load_synapse",
+    "properties": {
+        "description": "Loads silver Parquet into the Synapse star schema, then runs the data quality gate.",
+        "parameters": {
+            "loadDate": {
+                "type": "string"
+            }
+        },
+        "folder": {
+            "name": "warehouse"
+        },
+        "activities": [
+            {
+                "name": "stage_from_lake",
+                "type": "SqlServerStoredProcedure",
+                "policy": {
+                    "timeout": "0.02:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls_synapse",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "storedProcedureName": "[stg].[usp_stage_from_lake]",
+                    "storedProcedureParameters": {
+                        "load_date": {
+                            "value": {
+                                "value": "@pipeline().parameters.loadDate",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "load_dim_policy",
+                "type": "SqlServerStoredProcedure",
+                "policy": {
+                    "timeout": "0.02:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls_synapse",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "storedProcedureName": "[dw].[usp_load_dim_policy]"
+                },
+                "dependsOn": [
+                    {
+                        "activity": "stage_from_lake",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ]
+            },
+            {
+                "name": "load_dim_policyholder_scd2",
+                "type": "SqlServerStoredProcedure",
+                "policy": {
+                    "timeout": "0.02:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls_synapse",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "storedProcedureName": "[dw].[usp_load_dim_policyholder]",
+                    "storedProcedureParameters": {
+                        "run_id": {
+                            "value": {
+                                "value": "@pipeline().RunId",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        }
+                    }
+                },
+                "dependsOn": [
+                    {
+                        "activity": "load_dim_policy",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ]
+            },
+            {
+                "name": "load_fact_claims",
+                "type": "SqlServerStoredProcedure",
+                "policy": {
+                    "timeout": "0.02:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls_synapse",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "storedProcedureName": "[dw].[usp_load_fact_claims]",
+                    "storedProcedureParameters": {
+                        "run_id": {
+                            "value": {
+                                "value": "@pipeline().RunId",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        }
+                    }
+                },
+                "dependsOn": [
+                    {
+                        "activity": "load_dim_policyholder_scd2",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ]
+            },
+            {
+                "name": "run_quality_checks",
+                "type": "SqlServerStoredProcedure",
+                "policy": {
+                    "timeout": "0.02:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls_synapse",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "storedProcedureName": "[ctl].[usp_run_quality_checks]",
+                    "storedProcedureParameters": {
+                        "run_id": {
+                            "value": {
+                                "value": "@pipeline().RunId",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        }
+                    }
+                },
+                "dependsOn": [
+                    {
+                        "activity": "load_fact_claims",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}

@@ -1,0 +1,248 @@
+{
+    "name": "pl_master_daily",
+    "properties": {
+        "description": "Daily orchestration: ingest (SQL + partner files, in parallel) -> bronze-to-silver data flow -> Synapse load + DQ gate -> alert on failure.",
+        "parameters": {
+            "loadDate": {
+                "type": "string",
+                "defaultValue": ""
+            }
+        },
+        "variables": {
+            "loadDate": {
+                "type": "String"
+            }
+        },
+        "folder": {
+            "name": "orchestration"
+        },
+        "activities": [
+            {
+                "name": "set_load_date",
+                "type": "SetVariable",
+                "typeProperties": {
+                    "variableName": "loadDate",
+                    "value": {
+                        "value": "@if(empty(pipeline().parameters.loadDate), formatDateTime(convertFromUtc(utcNow(), 'GMT Standard Time'), 'yyyy-MM-dd'), pipeline().parameters.loadDate)",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "ingest_sql_sources",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "set_load_date",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_ingest_sql_incremental",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "loadDate": {
+                            "value": "@variables('loadDate')",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "ingest_partner_files",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "set_load_date",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_ingest_partner_files",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "loadDate": {
+                            "value": "@variables('loadDate')",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "transform_claims_to_silver",
+                "type": "ExecuteDataFlow",
+                "policy": {
+                    "timeout": "0.02:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "dependsOn": [
+                    {
+                        "activity": "ingest_sql_sources",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "ingest_partner_files",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "typeProperties": {
+                    "dataflow": {
+                        "referenceName": "df_claims_bronze_to_silver",
+                        "type": "DataFlowReference",
+                        "parameters": {
+                            "loadDate": {
+                                "value": "'@{variables('loadDate')}'",
+                                "type": "Expression"
+                            }
+                        }
+                    },
+                    "compute": {
+                        "coreCount": 8,
+                        "computeType": "General"
+                    },
+                    "traceLevel": "Coarse"
+                }
+            },
+            {
+                "name": "transform_reference_to_silver",
+                "type": "ExecuteDataFlow",
+                "policy": {
+                    "timeout": "0.02:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "dependsOn": [
+                    {
+                        "activity": "ingest_sql_sources",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "ingest_partner_files",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "typeProperties": {
+                    "dataflow": {
+                        "referenceName": "df_reference_bronze_to_silver",
+                        "type": "DataFlowReference",
+                        "parameters": {
+                            "loadDate": {
+                                "value": "'@{variables('loadDate')}'",
+                                "type": "Expression"
+                            }
+                        }
+                    },
+                    "compute": {
+                        "coreCount": 8,
+                        "computeType": "General"
+                    },
+                    "traceLevel": "Coarse"
+                }
+            },
+            {
+                "name": "load_warehouse",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "transform_claims_to_silver",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "transform_reference_to_silver",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_load_synapse",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "loadDate": {
+                            "value": "@variables('loadDate')",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "notify_failure",
+                "type": "WebActivity",
+                "description": "Fires if the warehouse load fails OR is skipped because any upstream step failed.",
+                "dependsOn": [
+                    {
+                        "activity": "load_warehouse",
+                        "dependencyConditions": [
+                            "Failed",
+                            "Skipped"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.00:05:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 30
+                },
+                "typeProperties": {
+                    "method": "POST",
+                    "url": {
+                        "value": "@pipeline().globalParameters.alertWebhookUrl",
+                        "type": "Expression"
+                    },
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "value": "@json(concat('{\"text\": \"Claims pipeline FAILED - factory ', pipeline().DataFactory, ', run ', pipeline().RunId, ', load date ', variables('loadDate'), '\"}'))",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "fail_run",
+                "type": "Fail",
+                "description": "Keep the run marked as failed after alerting, so monitoring and retries see it.",
+                "dependsOn": [
+                    {
+                        "activity": "notify_failure",
+                        "dependencyConditions": [
+                            "Completed"
+                        ]
+                    }
+                ],
+                "typeProperties": {
+                    "message": "Claims daily load failed - see activity output.",
+                    "errorCode": "CLAIMS_LOAD_FAILED"
+                }
+            }
+        ]
+    }
+}

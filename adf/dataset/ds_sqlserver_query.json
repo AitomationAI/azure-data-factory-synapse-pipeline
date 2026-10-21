@@ -1,0 +1,12 @@
+{
+    "name": "ds_sqlserver_query",
+    "properties": {
+        "type": "SqlServerTable",
+        "description": "Generic source dataset; activities always supply a query.",
+        "linkedServiceName": {
+            "referenceName": "ls_onprem_sqlserver",
+            "type": "LinkedServiceReference"
+        },
+        "typeProperties": {}
+    }
+}

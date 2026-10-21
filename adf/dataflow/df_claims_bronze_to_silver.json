@@ -1,0 +1,130 @@
+{
+    "name": "df_claims_bronze_to_silver",
+    "properties": {
+        "type": "MappingDataFlow",
+        "description": "Standardise, validate (all rules evaluated per row), keep the latest version per claim, enrich and write silver Parquet; rejected rows go to quarantine as JSON.",
+        "folder": {
+            "name": "transform"
+        },
+        "typeProperties": {
+            "sources": [
+                {
+                    "linkedService": {
+                        "referenceName": "ls_adls",
+                        "type": "LinkedServiceReference"
+                    },
+                    "name": "BronzeClaims"
+                }
+            ],
+            "sinks": [
+                {
+                    "linkedService": {
+                        "referenceName": "ls_adls",
+                        "type": "LinkedServiceReference"
+                    },
+                    "name": "SilverClaims"
+                },
+                {
+                    "linkedService": {
+                        "referenceName": "ls_adls",
+                        "type": "LinkedServiceReference"
+                    },
+                    "name": "QuarantinedClaims"
+                }
+            ],
+            "transformations": [
+                {
+                    "name": "Standardise"
+                },
+                {
+                    "name": "Validate"
+                },
+                {
+                    "name": "Route"
+                },
+                {
+                    "name": "RankVersions"
+                },
+                {
+                    "name": "LatestVersion"
+                },
+                {
+                    "name": "Enrich"
+                },
+                {
+                    "name": "SilverShape"
+                }
+            ],
+            "scriptLines": [
+                "parameters{",
+                "     loadDate as string",
+                "}",
+                "source(output(",
+                "          claim_id as string,",
+                "          policy_id as string,",
+                "          claim_type as string,",
+                "          incident_date as string,",
+                "          reported_date as string,",
+                "          claim_status as string,",
+                "          claimed_amount as string,",
+                "          paid_amount as string,",
+                "          adjuster_id as string,",
+                "          modified_at as string",
+                "     ),",
+                "     allowSchemaDrift: true,",
+                "     validateSchema: false,",
+                "     ignoreNoFilesFound: true,",
+                "     format: 'parquet',",
+                "     fileSystem: 'bronze',",
+                "     wildcardPaths:[(concat('claims/load_date=', $loadDate, '/*/*.parquet'))]) ~> BronzeClaims",
+                "BronzeClaims derive(claim_id = upper(trim(claim_id)),",
+                "          policy_id = upper(trim(policy_id)),",
+                "          claim_type = initCap(trim(claim_type)),",
+                "          claim_status = lower(trim(claim_status)),",
+                "          incident_date = coalesce(toDate(incident_date, 'yyyy-MM-dd'), toDate(incident_date, 'MM/dd/yyyy')),",
+                "          reported_date = coalesce(toDate(reported_date, 'yyyy-MM-dd'), toDate(reported_date, 'MM/dd/yyyy')),",
+                "          claimed_amount = toDecimal(replace(replace(claimed_amount, '$', ''), ',', ''), 14, 2),",
+                "          paid_amount = coalesce(toDecimal(replace(replace(paid_amount, '$', ''), ',', ''), 14, 2), toDecimal(0, 14, 2)),",
+                "          modified_at = toTimestamp(modified_at, \"yyyy-MM-dd'T'HH:mm:ss\")) ~> Standardise",
+                "Standardise derive(reject_reason = trim(concat(",
+                "               iif(isNull(claim_id), 'missing_claim_id ', ''),",
+                "               iif(isNull(policy_id), 'missing_policy_id ', ''),",
+                "               iif(isNull(incident_date), 'invalid_incident_date ', ''),",
+                "               iif(isNull(claimed_amount) || claimed_amount <= 0, 'invalid_claimed_amount ', ''),",
+                "               iif(paid_amount > claimed_amount, 'paid_exceeds_claimed ', ''),",
+                "               iif(reported_date < incident_date, 'reported_before_incident ', ''),",
+                "               iif(!in(['open','under_review','approved','paid','denied','closed'], claim_status), 'unknown_status ', '')",
+                "          ))) ~> Validate",
+                "Validate split(reject_reason == '',",
+                "     disjoint: false) ~> Route@(Valid, Rejected)",
+                "Route@Valid window(over(claim_id),",
+                "     desc(modified_at, true),",
+                "     rn = rowNumber()) ~> RankVersions",
+                "RankVersions filter(rn == 1) ~> LatestVersion",
+                "LatestVersion derive(days_to_report = toInteger(minus(toLong(reported_date), toLong(incident_date)) / 86400000),",
+                "          load_date = toDate($loadDate)) ~> Enrich",
+                "Enrich select(mapColumn(",
+                "          claim_id, policy_id, claim_type, incident_date, reported_date, claim_status,",
+                "          claimed_amount, paid_amount, adjuster_id, modified_at, days_to_report, load_date",
+                "     ),",
+                "     skipDuplicateMapInputs: true,",
+                "     skipDuplicateMapOutputs: true) ~> SilverShape",
+                "SilverShape sink(allowSchemaDrift: false,",
+                "     validateSchema: false,",
+                "     format: 'parquet',",
+                "     fileSystem: 'silver',",
+                "     folderPath: (concat('claims/load_date=', $loadDate)),",
+                "     truncate: true,",
+                "     umask: 0022,",
+                "     skipDuplicateMapInputs: true,",
+                "     skipDuplicateMapOutputs: true) ~> SilverClaims",
+                "Route@Rejected sink(allowSchemaDrift: true,",
+                "     validateSchema: false,",
+                "     format: 'json',",
+                "     fileSystem: 'quarantine',",
+                "     folderPath: (concat('claims/load_date=', $loadDate)),",
+                "     truncate: true) ~> QuarantinedClaims"
+            ]
+        }
+    }
+}

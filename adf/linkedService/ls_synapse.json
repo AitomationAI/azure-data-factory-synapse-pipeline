@@ -1,0 +1,11 @@
+{
+    "name": "ls_synapse",
+    "properties": {
+        "type": "AzureSqlDW",
+        "description": "Synapse dedicated SQL pool - managed identity authentication.",
+        "typeProperties": {
+            "connectionString": "Data Source=tcp:claims-dev-syn.sql.azuresynapse.net,1433;Initial Catalog=claimsdw;Encrypt=True;Connection Timeout=30",
+            "authenticationType": "SystemAssignedManagedIdentity"
+        }
+    }
+}

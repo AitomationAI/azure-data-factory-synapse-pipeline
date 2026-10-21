@@ -1,0 +1,12 @@
+{
+    "name": "ls_keyvault",
+    "properties": {
+        "type": "AzureKeyVault",
+        "annotations": [
+            "claims-analytics"
+        ],
+        "typeProperties": {
+            "baseUrl": "https://claims-dev-kv.vault.azure.net/"
+        }
+    }
+}

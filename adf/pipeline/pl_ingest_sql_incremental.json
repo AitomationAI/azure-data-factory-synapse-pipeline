@@ -1,0 +1,211 @@
+{
+    "name": "pl_ingest_sql_incremental",
+    "properties": {
+        "description": "Metadata-driven incremental extract: every active row in ctl.source_tables is copied (delta since its watermark) to bronze Parquet, in parallel.",
+        "parameters": {
+            "loadDate": {
+                "type": "string"
+            }
+        },
+        "folder": {
+            "name": "ingest"
+        },
+        "activities": [
+            {
+                "name": "lkp_source_tables",
+                "type": "Lookup",
+                "policy": {
+                    "timeout": "0.02:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlDWSource",
+                        "sqlReaderQuery": "SELECT source_name, source_schema, source_table, watermark_column, watermark_value FROM ctl.source_tables WHERE is_active = 1"
+                    },
+                    "dataset": {
+                        "referenceName": "ds_synapse_table",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "schema": "ctl",
+                            "table": "source_tables"
+                        }
+                    },
+                    "firstRowOnly": false
+                }
+            },
+            {
+                "name": "foreach_source_table",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "lkp_source_tables",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('lkp_source_tables').output.value",
+                        "type": "Expression"
+                    },
+                    "isSequential": false,
+                    "batchCount": 4,
+                    "activities": [
+                        {
+                            "name": "lkp_new_watermark",
+                            "type": "Lookup",
+                            "policy": {
+                                "timeout": "0.02:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "description": "Upper bound for this run - captured first so rows written during the copy wait for the next run.",
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderQuery": {
+                                        "value": "SELECT CONVERT(varchar(30), MAX(@{item().watermark_column}), 126) AS new_watermark FROM @{item().source_schema}.@{item().source_table}",
+                                        "type": "Expression"
+                                    }
+                                },
+                                "dataset": {
+                                    "referenceName": "ds_sqlserver_query",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            }
+                        },
+                        {
+                            "name": "copy_delta_to_bronze",
+                            "type": "Copy",
+                            "policy": {
+                                "timeout": "0.02:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "dependsOn": [
+                                {
+                                    "activity": "lkp_new_watermark",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderQuery": {
+                                        "value": "SELECT * FROM @{item().source_schema}.@{item().source_table} WHERE @{item().watermark_column} > '@{item().watermark_value}' AND @{item().watermark_column} <= '@{activity('lkp_new_watermark').output.firstRow.new_watermark}'",
+                                        "type": "Expression"
+                                    },
+                                    "queryTimeout": "02:00:00",
+                                    "partitionOption": "None"
+                                },
+                                "sink": {
+                                    "type": "ParquetSink",
+                                    "storeSettings": {
+                                        "type": "AzureBlobFSWriteSettings"
+                                    }
+                                },
+                                "enableStaging": false,
+                                "translator": {
+                                    "type": "TabularTranslator",
+                                    "typeConversion": true
+                                }
+                            },
+                            "inputs": [
+                                {
+                                    "referenceName": "ds_sqlserver_query",
+                                    "type": "DatasetReference"
+                                }
+                            ],
+                            "outputs": [
+                                {
+                                    "referenceName": "ds_lake_parquet",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "container": "bronze",
+                                        "folderPath": {
+                                            "value": "@{item().source_name}/load_date=@{pipeline().parameters.loadDate}/run_id=@{pipeline().RunId}",
+                                            "type": "Expression"
+                                        },
+                                        "fileName": {
+                                            "value": "@{item().source_name}.parquet",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "name": "update_watermark",
+                            "type": "SqlServerStoredProcedure",
+                            "policy": {
+                                "timeout": "0.02:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "dependsOn": [
+                                {
+                                    "activity": "copy_delta_to_bronze",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "description": "Only advanced after a successful copy, so a failed run is simply retried.",
+                            "linkedServiceName": {
+                                "referenceName": "ls_synapse",
+                                "type": "LinkedServiceReference"
+                            },
+                            "typeProperties": {
+                                "storedProcedureName": "[ctl].[usp_update_watermark]",
+                                "storedProcedureParameters": {
+                                    "source_name": {
+                                        "value": {
+                                            "value": "@item().source_name",
+                                            "type": "Expression"
+                                        },
+                                        "type": "String"
+                                    },
+                                    "new_watermark": {
+                                        "value": {
+                                            "value": "@coalesce(activity('lkp_new_watermark').output.firstRow.new_watermark, item().watermark_value)",
+                                            "type": "Expression"
+                                        },
+                                        "type": "String"
+                                    },
+                                    "rows_copied": {
+                                        "value": {
+                                            "value": "@activity('copy_delta_to_bronze').output.rowsCopied",
+                                            "type": "Expression"
+                                        },
+                                        "type": "Int64"
+                                    },
+                                    "run_id": {
+                                        "value": {
+                                            "value": "@pipeline().RunId",
+                                            "type": "Expression"
+                                        },
+                                        "type": "String"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+}

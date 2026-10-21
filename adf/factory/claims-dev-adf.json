@@ -1,0 +1,15 @@
+{
+    "name": "claims-dev-adf",
+    "properties": {
+        "globalParameters": {
+            "alertWebhookUrl": {
+                "type": "String",
+                "value": "https://example.webhook.office.com/replace-me"
+            }
+        }
+    },
+    "location": "westeurope",
+    "identity": {
+        "type": "SystemAssigned"
+    }
+}

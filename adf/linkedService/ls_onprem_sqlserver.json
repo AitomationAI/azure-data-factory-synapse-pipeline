@@ -1,0 +1,23 @@
+{
+    "name": "ls_onprem_sqlserver",
+    "properties": {
+        "type": "SqlServer",
+        "description": "On-premises claims system (read-only replica) reached through the self-hosted IR.",
+        "connectVia": {
+            "referenceName": "ir-onprem",
+            "type": "IntegrationRuntimeReference"
+        },
+        "typeProperties": {
+            "connectionString": "Data Source=claims-sql01.corp.local;Initial Catalog=ClaimsOLTP;Integrated Security=False;Encrypt=True;TrustServerCertificate=True",
+            "userName": "svc_adf_reader",
+            "password": {
+                "type": "AzureKeyVaultSecret",
+                "store": {
+                    "referenceName": "ls_keyvault",
+                    "type": "LinkedServiceReference"
+                },
+                "secretName": "onprem-sql-password"
+            }
+        }
+    }
+}

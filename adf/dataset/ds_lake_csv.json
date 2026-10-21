@@ -1,0 +1,44 @@
+{
+    "name": "ds_lake_csv",
+    "properties": {
+        "type": "DelimitedText",
+        "linkedServiceName": {
+            "referenceName": "ls_adls",
+            "type": "LinkedServiceReference"
+        },
+        "parameters": {
+            "container": {
+                "type": "string"
+            },
+            "folderPath": {
+                "type": "string"
+            },
+            "fileName": {
+                "type": "string",
+                "defaultValue": ""
+            }
+        },
+        "typeProperties": {
+            "location": {
+                "type": "AzureBlobFSLocation",
+                "fileSystem": {
+                    "value": "@dataset().container",
+                    "type": "Expression"
+                },
+                "folderPath": {
+                    "value": "@dataset().folderPath",
+                    "type": "Expression"
+                },
+                "fileName": {
+                    "value": "@dataset().fileName",
+                    "type": "Expression"
+                }
+            },
+            "columnDelimiter": ",",
+            "escapeChar": "\\",
+            "firstRowAsHeader": true,
+            "quoteChar": "\"",
+            "encodingName": "UTF-8"
+        }
+    }
+}

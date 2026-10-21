@@ -1,0 +1,7 @@
+{
+    "name": "ir-onprem",
+    "properties": {
+        "type": "SelfHosted",
+        "description": "Reaches the on-premises claims SQL Server. Install the agent on a VM inside the corporate network."
+    }
+}

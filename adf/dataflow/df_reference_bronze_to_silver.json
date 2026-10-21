@@ -1,0 +1,130 @@
+{
+    "name": "df_reference_bronze_to_silver",
+    "properties": {
+        "type": "MappingDataFlow",
+        "description": "Cleans policies (SCD1 source) and partner policyholders (SCD2 source: latest version per holder + SHA-256 change hash) into silver Parquet.",
+        "folder": {
+            "name": "transform"
+        },
+        "typeProperties": {
+            "sources": [
+                {
+                    "linkedService": {
+                        "referenceName": "ls_adls",
+                        "type": "LinkedServiceReference"
+                    },
+                    "name": "BronzePolicies"
+                },
+                {
+                    "linkedService": {
+                        "referenceName": "ls_adls",
+                        "type": "LinkedServiceReference"
+                    },
+                    "name": "BronzePolicyholders"
+                }
+            ],
+            "sinks": [
+                {
+                    "linkedService": {
+                        "referenceName": "ls_adls",
+                        "type": "LinkedServiceReference"
+                    },
+                    "name": "SilverPolicies"
+                },
+                {
+                    "linkedService": {
+                        "referenceName": "ls_adls",
+                        "type": "LinkedServiceReference"
+                    },
+                    "name": "SilverPolicyholders"
+                }
+            ],
+            "transformations": [
+                {
+                    "name": "CleanPolicies"
+                },
+                {
+                    "name": "ValidPolicies"
+                },
+                {
+                    "name": "PolicyShape"
+                },
+                {
+                    "name": "CleanHolders"
+                },
+                {
+                    "name": "ValidHolders"
+                },
+                {
+                    "name": "RankHolders"
+                },
+                {
+                    "name": "LatestHolders"
+                },
+                {
+                    "name": "HashHolders"
+                },
+                {
+                    "name": "HolderShape"
+                }
+            ],
+            "scriptLines": [
+                "parameters{",
+                "     loadDate as string",
+                "}",
+                "source(allowSchemaDrift: true,",
+                "     validateSchema: false,",
+                "     ignoreNoFilesFound: true,",
+                "     format: 'parquet',",
+                "     fileSystem: 'bronze',",
+                "     wildcardPaths:[(concat('policies/load_date=', $loadDate, '/*/*.parquet'))]) ~> BronzePolicies",
+                "source(allowSchemaDrift: true,",
+                "     validateSchema: false,",
+                "     ignoreNoFilesFound: true,",
+                "     format: 'parquet',",
+                "     fileSystem: 'bronze',",
+                "     wildcardPaths:[(concat('policyholders/load_date=', $loadDate, '/*.parquet'))]) ~> BronzePolicyholders",
+                "BronzePolicies derive(policy_id = upper(trim(toString(byName('policy_id')))),",
+                "          policyholder_id = upper(trim(toString(byName('policyholder_id')))),",
+                "          product_line = initCap(trim(toString(byName('product_line')))),",
+                "          coverage_limit = toDecimal(toString(byName('coverage_limit')), 14, 2),",
+                "          annual_premium = toDecimal(toString(byName('annual_premium')), 12, 2),",
+                "          start_date = toDate(toString(byName('start_date')), 'yyyy-MM-dd'),",
+                "          end_date = toDate(toString(byName('end_date')), 'yyyy-MM-dd'),",
+                "          channel = lower(trim(toString(byName('channel'))))) ~> CleanPolicies",
+                "CleanPolicies filter(!isNull(policy_id) && !isNull(policyholder_id) && !isNull(product_line)) ~> ValidPolicies",
+                "ValidPolicies select(mapColumn(policy_id, policyholder_id, product_line, coverage_limit, annual_premium,",
+                "          start_date, end_date, channel),",
+                "     skipDuplicateMapInputs: true,",
+                "     skipDuplicateMapOutputs: true) ~> PolicyShape",
+                "PolicyShape sink(allowSchemaDrift: false,",
+                "     validateSchema: false,",
+                "     format: 'parquet',",
+                "     fileSystem: 'silver',",
+                "     folderPath: (concat('policies/load_date=', $loadDate)),",
+                "     truncate: true) ~> SilverPolicies",
+                "BronzePolicyholders derive(policyholder_id = upper(trim(toString(byName('policyholder_id')))),",
+                "          full_name = initCap(trim(toString(byName('full_name')))),",
+                "          birth_year = toInteger(byName('birth_year')),",
+                "          region = initCap(trim(toString(byName('region')))),",
+                "          risk_tier = upper(trim(toString(byName('risk_tier')))),",
+                "          updated_at = toTimestamp(toString(byName('updated_at')), \"yyyy-MM-dd'T'HH:mm:ss\")) ~> CleanHolders",
+                "CleanHolders filter(!isNull(policyholder_id) && in(['A','B','C','D'], risk_tier)) ~> ValidHolders",
+                "ValidHolders window(over(policyholder_id),",
+                "     desc(updated_at, true),",
+                "     rn = rowNumber()) ~> RankHolders",
+                "RankHolders filter(rn == 1) ~> LatestHolders",
+                "LatestHolders derive(row_hash = sha2(256, full_name, birth_year, region, risk_tier)) ~> HashHolders",
+                "HashHolders select(mapColumn(policyholder_id, full_name, birth_year, region, risk_tier, row_hash),",
+                "     skipDuplicateMapInputs: true,",
+                "     skipDuplicateMapOutputs: true) ~> HolderShape",
+                "HolderShape sink(allowSchemaDrift: false,",
+                "     validateSchema: false,",
+                "     format: 'parquet',",
+                "     fileSystem: 'silver',",
+                "     folderPath: (concat('policyholders/load_date=', $loadDate)),",
+                "     truncate: true) ~> SilverPolicyholders"
+            ]
+        }
+    }
+}

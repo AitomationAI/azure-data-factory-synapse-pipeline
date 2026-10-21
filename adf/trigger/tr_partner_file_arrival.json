@@ -1,0 +1,28 @@
+{
+    "name": "tr_partner_file_arrival",
+    "properties": {
+        "type": "BlobEventsTrigger",
+        "description": "Lands partner files in bronze as soon as they arrive; the daily run picks them up from there.",
+        "runtimeState": "Started",
+        "pipelines": [
+            {
+                "pipelineReference": {
+                    "referenceName": "pl_ingest_partner_files",
+                    "type": "PipelineReference"
+                },
+                "parameters": {
+                    "loadDate": "@formatDateTime(trigger().startTime, 'yyyy-MM-dd')"
+                }
+            }
+        ],
+        "typeProperties": {
+            "blobPathBeginsWith": "/inbound/blobs/partner/",
+            "blobPathEndsWith": ".csv",
+            "ignoreEmptyBlobs": true,
+            "events": [
+                "Microsoft.Storage.BlobCreated"
+            ],
+            "scope": "/subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.Storage/storageAccounts/claimsdevlake"
+        }
+    }
+}
